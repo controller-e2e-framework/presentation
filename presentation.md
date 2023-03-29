@@ -326,6 +326,153 @@ https://github.com/kubernetes-sigs/cluster-api/blob/e4e35b0789ee1ed248d93561bc8d
 
 ---
 
+### E2E Framework
+
+https://github.com/kubernetes-sigs/e2e-framework/
+
+
+---
+
+### What is it?
+
+It's a framework to build, start, manage clusters and run tests in a composable manner.
+
+---
+
+### ... What?
+
+Building blocks that are composed of Setups and Assesses.
+
+![width:500px](building-blocks.png)
+
+---
+
+### TestMain
+
+```go
+func TestMain(m *testing.M) {
+	cfg, _ := envconf.NewFromFlags()
+	testEnv = env.NewWithConfig(cfg)
+	kindClusterName = envconf.RandomName("test-controller-e2e", 32)
+	namespace = envconf.RandomName("namespace", 16)
+
+	testEnv.Setup(
+		envfuncs.CreateKindCluster(kindClusterName),
+		envfuncs.CreateNamespace(namespace),
+		shared.RunTiltForControllers("test-1-controller", "test-2-controller"),
+	)
+
+	testEnv.Finish(
+		envfuncs.DeleteNamespace(namespace),
+		envfuncs.DestroyKindCluster(kindClusterName),
+	)
+
+	os.Exit(testEnv.Run(m))
+}
+```
+
+---
+
+### Setup
+
+```go
+	feature := features.New("Custom Controller").
+		Setup(setup.AddSchemeAndNamespace(cv1.AddToScheme, namespace)).
+		Setup(setup.AddSchemeAndNamespace(rv1.AddToScheme, namespace)).
+		Setup(setup.ApplyTestData(v1alpha1.AddToScheme, namespace, "*")).
+```
+
+---
+
+### ApplyTestData
+
+```go
+func ApplyTestData(addToSchemeFunc func(s *runtime.Scheme) error, namespace, pattern string) features.Func {
+	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		t.Helper()
+		t.Log("in setup phase")
+
+		r, err := resources.New(c.Client().RESTConfig())
+		if err != nil {
+			t.Fail()
+		}
+
+		if err := decoder.DecodeEachFile(
+			ctx, os.DirFS("./testdata"), pattern,
+			decoder.CreateHandler(r),
+			decoder.MutateNamespace(namespace),
+		); err != nil {
+			t.Fail()
+		}
+
+		t.Log("set up is done, component version should have been applied")
+
+		return ctx
+	}
+}
+```
+
+---
+
+### Context can be used to transfer anything
+
+```go
+	createDeployment := features.New("Create Deployment").
+		Assess("Create Nginx Deployment 1", func(ctx context.Context, t *testing.T, config *envconf.Config) context.Context {
+			deployment := newDeployment(namespace, "deployment-1", 2)
+			err := config.Client().Resources().Create(ctx, deployment)
+			if err != nil {
+				t.Error("failed to create test pod for deployment-1")
+			}
+			ctx = context.WithValue(ctx, "DEPLOYMENT", deployment)
+			return ctx
+		}).
+		Assess("Wait for Nginx Deployment 1 to be scaled up", func(ctx context.Context, t *testing.T, config *envconf.Config) context.Context {
+			deployment := ctx.Value("DEPLOYMENT").(*appsv1.Deployment)
+			err := wait.For(conditions.New(config.Client().Resources()).ResourceScaled(deployment, func(object k8s.Object) int32 {
+				return object.(*appsv1.Deployment).Status.ReadyReplicas
+			}, 2))
+			if err != nil {
+				t.Error("failed waiting for deployment to be scaled up")
+			}
+			return ctx
+		}).Feature()
+```
+---
+
+### Assess
+
+```go
+func ResourceWasCreated(name, namespace string, obj k8s.Object) features.Func {
+	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		t.Helper()
+		t.Log("check if resources are created")
+
+		r, err := resources.New(c.Client().RESTConfig())
+		if err != nil {
+			t.Fail()
+		}
+
+		if err := r.Get(ctx, name, namespace, obj); err != nil {
+			t.Fail()
+		}
+
+		t.Log("resource successfully created")
+
+		return ctx
+	}
+}
+```
+---
+
+### Let's see it in action
+
+![width:600px](cogs.png)
+
+---
+
 **Thank You!**
 
 https://github.com/Skarlso
+
+![width:500](goodbye.png)
